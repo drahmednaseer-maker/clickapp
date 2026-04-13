@@ -8,17 +8,43 @@ on:
 permissions:
   contents: write
 
+# Shared icon-generation script (used by both build jobs)
+env:
+  ICON_SCRIPT: |
+    from PIL import Image, ImageDraw, ImageFont
+    size = 1024
+    img = Image.new("RGBA", (size, size), (13, 15, 24, 255))
+    draw = ImageDraw.Draw(img)
+    for r in range(size//2, 0, -1):
+        ratio = r / (size//2)
+        col = (int(12+ratio*112), int(15+ratio*99), int(24+ratio*239), 255)
+        draw.ellipse([size//2-r, size//2-r, size//2+r, size//2+r], fill=col)
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/SFNS.ttf", 420)
+    except:
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 420)
+        except:
+            font = ImageFont.load_default()
+    text = "RC"
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+    draw.text(((size-tw)//2-bbox[0], (size-th)//2-bbox[1]-20),
+              text, fill=(167, 139, 250, 255), font=font)
+    img.save("/tmp/AppIcon_1024.png")
+
 jobs:
-  build-and-release:
+  # ── Apple Silicon (ARM64) — native build ────────────────────────────────────
+  build-apple-silicon:
     runs-on: macos-latest
     timeout-minutes: 30
-
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          architecture: arm64
 
       - name: Install system deps
         run: |
@@ -26,125 +52,125 @@ jobs:
           brew install python-tk@3.11 || brew install python-tk || true
 
       - name: Install Python packages
-        run: |
-          pip install --upgrade pip
-          pip install mss pyautogui pillow pytesseract opencv-python pyinstaller dmgbuild
+        run: pip install --upgrade pip && pip install mss pyautogui pillow pytesseract opencv-python pyinstaller dmgbuild
 
       - name: Generate AppIcon.icns
         run: |
-          python3 - <<'EOF'
-          from PIL import Image, ImageDraw, ImageFont
-          size = 1024
-          img = Image.new("RGBA", (size, size), (13, 15, 24, 255))
-          draw = ImageDraw.Draw(img)
-          for r in range(size//2, 0, -1):
-              ratio = r / (size//2)
-              col = (int(12+ratio*112), int(15+ratio*99), int(24+ratio*239), 255)
-              draw.ellipse([size//2-r, size//2-r, size//2+r, size//2+r], fill=col)
-          try:
-              font = ImageFont.truetype("/System/Library/Fonts/SFNS.ttf", 420)
-          except:
-              try:
-                  font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 420)
-              except:
-                  font = ImageFont.load_default()
-          text = "RC"
-          bbox = draw.textbbox((0, 0), text, font=font)
-          tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-          draw.text(((size-tw)//2-bbox[0], (size-th)//2-bbox[1]-20),
-                    text, fill=(167, 139, 250, 255), font=font)
-          img.save("/tmp/AppIcon_1024.png")
-          EOF
+          echo "$ICON_SCRIPT" | python3
           mkdir -p /tmp/AppIcon.iconset
           for R in 16 32 64 128 256 512 1024; do
             sips -z $R $R /tmp/AppIcon_1024.png --out "/tmp/AppIcon.iconset/icon_${R}x${R}.png"
-            if [ $R -le 512 ]; then
-              sips -z $((R*2)) $((R*2)) /tmp/AppIcon_1024.png \
-                --out "/tmp/AppIcon.iconset/icon_${R}x${R}@2x.png"
-            fi
+            [ $R -le 512 ] && sips -z $((R*2)) $((R*2)) /tmp/AppIcon_1024.png \
+              --out "/tmp/AppIcon.iconset/icon_${R}x${R}@2x.png"
           done
           iconutil -c icns /tmp/AppIcon.iconset -o AppIcon.icns
-          echo "AppIcon.icns created"
 
-      - name: Build RetryClicker.app
+      - name: Build .app
         run: pyinstaller RetryClicker.spec --noconfirm
 
       - name: Ad-hoc sign
-        run: |
-          codesign --force --deep --options runtime \
-                   --entitlements entitlements.plist \
-                   --sign - "dist/RetryClicker.app"
-          echo "Signed OK"
+        run: codesign --force --deep --options runtime --entitlements entitlements.plist --sign - "dist/RetryClicker.app"
 
       - name: Create DMG
         run: |
-          cat > /tmp/dmg_settings.py << 'EOF'
-          import os
-          application = defines.get('app', 'dist/RetryClicker.app')
-          appname = os.path.basename(application)
-          size = None
-          files = [application]
-          symlinks = {'Applications': '/Applications'}
-          icon_locations = {appname: (160, 180), 'Applications': (480, 180)}
-          background = 'builtin-arrow'
-          show_status_bar = False
-          show_tab_view = False
-          show_toolbar = False
-          show_pathbar = False
-          show_sidebar = False
-          sidebar_width = 180
-          window_rect = ((200, 120), (660, 400))
-          default_view = 'icon-view'
-          show_icon_preview = False
-          icon_size = 128
-          text_size = 13
-          EOF
+          hdiutil create -volname "RetryClicker" -srcfolder "dist/RetryClicker.app" \
+            -ov -format UDZO "dist/RetryClicker_1.1.0_AppleSilicon.dmg"
 
-          dmgbuild \
-            -s /tmp/dmg_settings.py \
-            -D app=dist/RetryClicker.app \
-            "RetryClicker" \
-            "dist/RetryClicker_1.1.0.dmg" || \
-          hdiutil create \
-            -volname "RetryClicker" \
-            -srcfolder "dist/RetryClicker.app" \
-            -ov -format UDZO \
-            "dist/RetryClicker_1.1.0.dmg"
-
-          echo "DMG size: $(du -sh dist/RetryClicker_1.1.0.dmg)"
-
-      - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: RetryClicker-macOS-DMG
-          path: dist/RetryClicker_1.1.0.dmg
+          name: DMG-AppleSilicon
+          path: dist/RetryClicker_1.1.0_AppleSilicon.dmg
           retention-days: 30
 
-      - name: Publish GitHub Release v1.1.0
-        uses: softprops/action-gh-release@v2
+  # ── Intel x86_64 — via Rosetta 2 on the same Apple Silicon runner ───────────
+  build-intel:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          architecture: x64        # x86_64 Python via Rosetta 2
+
+      - name: Install system deps
+        run: |
+          brew install tesseract
+          brew install python-tk@3.11 || brew install python-tk || true
+
+      - name: Install Python packages (x86_64 wheels)
+        run: pip install --upgrade pip && pip install mss pyautogui pillow pytesseract opencv-python pyinstaller dmgbuild
+
+      - name: Generate AppIcon.icns
+        run: |
+          echo "$ICON_SCRIPT" | python3
+          mkdir -p /tmp/AppIcon.iconset
+          for R in 16 32 64 128 256 512 1024; do
+            sips -z $R $R /tmp/AppIcon_1024.png --out "/tmp/AppIcon.iconset/icon_${R}x${R}.png"
+            [ $R -le 512 ] && sips -z $((R*2)) $((R*2)) /tmp/AppIcon_1024.png \
+              --out "/tmp/AppIcon.iconset/icon_${R}x${R}@2x.png"
+          done
+          iconutil -c icns /tmp/AppIcon.iconset -o AppIcon.icns
+
+      - name: Build .app (x86_64)
+        run: pyinstaller RetryClicker.spec --noconfirm
+
+      - name: Ad-hoc sign
+        run: codesign --force --deep --options runtime --entitlements entitlements.plist --sign - "dist/RetryClicker.app"
+
+      - name: Create DMG
+        run: |
+          hdiutil create -volname "RetryClicker" -srcfolder "dist/RetryClicker.app" \
+            -ov -format UDZO "dist/RetryClicker_1.1.0_Intel.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DMG-Intel
+          path: dist/RetryClicker_1.1.0_Intel.dmg
+          retention-days: 30
+
+  # ── Publish both as GitHub Release ──────────────────────────────────────────
+  release:
+    needs: [build-apple-silicon, build-intel]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DMG-AppleSilicon
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: DMG-Intel
+          path: dist/
+
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.1.0
-          name: "RetryClicker v1.1.0 — macOS"
+          name: "RetryClicker v1.1.0 — macOS (Apple Silicon + Intel)"
           body: |
             ## RetryClicker v1.1.0 — macOS
 
-            Works on **both Intel and Apple Silicon** Macs (Intel runs via Rosetta 2).
+            | File | For |
+            |---|---|
+            | `RetryClicker_1.1.0_AppleSilicon.dmg` | M1/M2/M3/M4 Macs (native ARM64) |
+            | `RetryClicker_1.1.0_Intel.dmg` | Intel iMac / MacBook (x86_64) |
 
-            ### Installation
-            1. Download `RetryClicker_1.1.0.dmg`
-            2. Open the DMG → drag **RetryClicker** to **Applications**
-            3. **Right-click → Open** on first launch (bypasses Gatekeeper)
-            4. Grant permissions when prompted:
-               - **Screen Recording**: System Settings → Privacy & Security → Screen Recording → Enable RetryClicker
-               - **Accessibility**: System Settings → Privacy & Security → Accessibility → Enable RetryClicker
+            ### First Launch (both versions)
+            macOS will block the app since it's ad-hoc signed. To open it:
+            1. Go to **System Settings → Privacy & Security**
+            2. Scroll down → click **"Open Anyway"** next to RetryClicker
+            3. Then grant **Screen Recording** and **Accessibility** permissions
 
             ### Features
-            - ⚡ Ultra-fast template matching
-            - 🔍 OCR fallback — detects Retry, Accept all, and any custom text
-            - 🎯 Bottom-right tile scan for instant detection
+            - ⚡ Template matching + OCR fallback (Retry, Accept all, custom text)
+            - 🎯 Bottom-right tile scan for instant detection  
             - 🖥️ Live preview with match highlighting
             - Compatible with macOS Tahoe (26), Sequoia (15), Sonoma (14)
-          files: dist/RetryClicker_1.1.0.dmg
+          files: |
+            dist/RetryClicker_1.1.0_AppleSilicon.dmg
+            dist/RetryClicker_1.1.0_Intel.dmg
           draft: false
           prerelease: false
           make_latest: true
