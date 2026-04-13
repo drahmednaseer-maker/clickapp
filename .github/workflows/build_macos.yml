@@ -5,6 +5,9 @@ on:
     branches: [main, master]
   workflow_dispatch:   # allow manual trigger from GitHub UI
 
+permissions:
+  contents: write    # required to create releases and upload release assets
+
 jobs:
   build-macos-dmg:
     runs-on: macos-latest   # Apple Silicon runner (macOS 14/15)
