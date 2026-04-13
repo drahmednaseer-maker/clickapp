@@ -1,0 +1,17 @@
+{
+  "region": {
+    "x": 2074,
+    "y": 725,
+    "w": 485,
+    "h": 285
+  },
+  "interval": 0.2,
+  "cooldown": 3.0,
+  "keyword": "Retry, Accept all",
+  "confidence": 10,
+  "case_sensitive": false,
+  "click_offset_x": 0,
+  "click_offset_y": 0,
+  "tmatch_thresh": 0.72,
+  "preprocess": false
+}

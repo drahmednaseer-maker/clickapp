@@ -1,0 +1,182 @@
+name: Build macOS DMG
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:   # allow manual trigger from GitHub UI
+
+jobs:
+  build-macos-dmg:
+    runs-on: macos-latest   # Apple Silicon runner (macOS 14/15)
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Install Homebrew deps ─────────────────────────────────────────
+      - name: Install Tesseract + python-tk
+        run: |
+          brew install tesseract
+          brew install python-tk@3.11 || brew install python-tk || true
+
+      # ── 4. Install Python packages ───────────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install mss pyautogui pillow pytesseract opencv-python pyinstaller
+
+      # ── 5. Generate app icon ─────────────────────────────────────────────
+      - name: Generate AppIcon.icns
+        run: |
+          python3 - <<'EOF'
+          from PIL import Image, ImageDraw, ImageFont
+          size = 1024
+          img = Image.new("RGBA", (size, size), (13, 15, 24, 255))
+          draw = ImageDraw.Draw(img)
+          for r in range(size//2, 0, -1):
+              ratio = r / (size//2)
+              col = (
+                  int(12 + ratio * 112),
+                  int(15 + ratio * 99),
+                  int(24 + ratio * 239),
+                  255
+              )
+              draw.ellipse([size//2-r, size//2-r, size//2+r, size//2+r], fill=col)
+          try:
+              font = ImageFont.truetype("/System/Library/Fonts/SFNS.ttf", 420)
+          except Exception:
+              try:
+                  font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 420)
+              except Exception:
+                  font = ImageFont.load_default()
+          text = "RC"
+          bbox = draw.textbbox((0, 0), text, font=font)
+          tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+          draw.text(((size-tw)//2 - bbox[0], (size-th)//2 - bbox[1] - 20),
+                    text, fill=(167, 139, 250, 255), font=font)
+          img.save("/tmp/AppIcon_1024.png")
+          print("Icon PNG created")
+          EOF
+
+          mkdir -p /tmp/AppIcon.iconset
+          for RES in 16 32 64 128 256 512 1024; do
+            sips -z $RES $RES /tmp/AppIcon_1024.png \
+                 --out "/tmp/AppIcon.iconset/icon_${RES}x${RES}.png"
+            if [ $RES -le 512 ]; then
+              R2=$((RES*2))
+              sips -z $R2 $R2 /tmp/AppIcon_1024.png \
+                   --out "/tmp/AppIcon.iconset/icon_${RES}x${RES}@2x.png"
+            fi
+          done
+          iconutil -c icns /tmp/AppIcon.iconset -o AppIcon.icns
+          echo "AppIcon.icns generated"
+
+      # ── 6. Build .app with PyInstaller ───────────────────────────────────
+      - name: Build RetryClicker.app
+        run: |
+          pyinstaller RetryClicker.spec --noconfirm
+          echo "Build complete"
+          ls -la dist/
+
+      # ── 7. Ad-hoc code sign ──────────────────────────────────────────────
+      - name: Ad-hoc code sign
+        run: |
+          codesign --force --deep --options runtime \
+                   --entitlements entitlements.plist \
+                   --sign - "dist/RetryClicker.app"
+          echo "Signed"
+
+      # ── 8. Create DMG ────────────────────────────────────────────────────
+      - name: Create DMG
+        run: |
+          pip install dmgbuild
+          cat > /tmp/dmg_settings.py << 'EOF'
+          import os
+          application = defines.get('app', 'dist/RetryClicker.app')
+          appname = os.path.basename(application)
+          size = None
+          files = [application]
+          symlinks = {'Applications': '/Applications'}
+          icon_locations = {
+              appname: (160, 180),
+              'Applications': (480, 180),
+          }
+          background = 'builtin-arrow'
+          show_status_bar = False
+          show_tab_view = False
+          show_toolbar = False
+          show_pathbar = False
+          show_sidebar = False
+          sidebar_width = 180
+          window_rect = ((200, 120), (660, 400))
+          default_view = 'icon-view'
+          show_icon_preview = False
+          icon_size = 128
+          grid_offset = (0, 0)
+          grid_spacing = 100
+          scroll_position = (0, 0)
+          label_pos = 'bottom'
+          text_size = 13
+          EOF
+
+          # Try dmgbuild first (nicer DMG with Applications shortcut)
+          dmgbuild \
+            -s /tmp/dmg_settings.py \
+            -D app=dist/RetryClicker.app \
+            "RetryClicker" \
+            "dist/RetryClicker_1.0.0.dmg" || \
+          # Fallback to plain hdiutil
+          hdiutil create \
+            -volname "RetryClicker" \
+            -srcfolder "dist/RetryClicker.app" \
+            -ov -format UDZO \
+            "dist/RetryClicker_1.0.0.dmg"
+
+          echo "DMG created:"
+          ls -lh dist/RetryClicker_1.0.0.dmg
+
+      # ── 9. Upload DMG as artifact ─────────────────────────────────────────
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RetryClicker-macOS-DMG
+          path: dist/RetryClicker_1.0.0.dmg
+          retention-days: 30
+
+      # ── 10. Create GitHub Release with DMG ────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: "RetryClicker v1.0.0 — macOS"
+          body: |
+            ## RetryClicker v1.0.0 — macOS
+
+            ### Installation
+            1. Download `RetryClicker_1.0.0.dmg`
+            2. Open the DMG → drag **RetryClicker** to **Applications**
+            3. Launch RetryClicker from Applications
+            4. On first launch, grant permissions:
+               - **Screen Recording**: System Settings > Privacy & Security > Screen Recording → Enable for RetryClicker
+               - **Accessibility**: System Settings > Privacy & Security > Accessibility → Enable for RetryClicker
+
+            ### Features
+            - ⚡ Ultra-fast template matching (primary — no OCR needed)
+            - 🔍 OCR fallback for text buttons (Retry, Accept all, etc.)
+            - 🎯 Bottom-right-first tile scan for instant detection
+            - 🖥️ Live preview with match highlighting
+            - Compatible with macOS Tahoe (26), Sequoia (15), Sonoma (14)
+          files: dist/RetryClicker_1.0.0.dmg
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

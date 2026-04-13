@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for pyautogui to move the mouse and click -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+
+    <!-- Required for mss to capture the screen -->
+    <key>com.apple.security.screen-capture</key>
+    <true/>
+
+    <!-- Allows the app to run without being sandboxed -->
+    <!-- (Sandbox would block screen capture + accessibility) -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Hardened runtime — required for notarization -->
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>
